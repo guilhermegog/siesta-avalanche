@@ -1,10 +1,9 @@
 from typing import Dict
 
 import torch
-from torch import Tensor, nn
-from torch.nn.functional import F
-
+import torch.nn.functional as F
 from avalanche.models import DynamicModule
+from torch import Tensor, nn
 
 
 class SiestaClassifier(DynamicModule):
@@ -14,23 +13,32 @@ class SiestaClassifier(DynamicModule):
         self.out_features = out_features
         self.tau = tau
         self.weights = nn.Parameter(torch.randn(out_features, in_features))
-        self.register_buffer("class_counter", torch.zeros(
-            out_features, dtype=torch.int64))
+        self.register_buffer(
+            "class_counter", torch.zeros(out_features, dtype=torch.int64)
+        )
 
     def forward(self, x):
-        norm_weights = F.normalize(self.weights, dim=1)
-        norm_x = F.normalize(x, dim=1)
+        z = x
+        norm_weights = F.normalize(self.weights, p=2, dim=1)
+        norm_x = F.normalize(x, p=2, dim=1)
 
-        cosine_similarity = norm_x @ norm_weights.t()
-        scaled_cosine_sim = cosine_similarity/self.tau
+        cosine_similarity = torch.matmul(norm_x, norm_weights)
+        scaled_cosine_sim = cosine_similarity / self.tau
 
         out = F.softmax(scaled_cosine_sim, dim=1)
-        return out
+        return out, z
 
-    def online_update(self, x, y):
-        self.weights[y.label] = self.class_counter[y.label] * \
-            self.weights[y.label]+x
-        self.weights[y.label] = self.weights[y.label] / \
-            (self.class_counter[y.label]+1)
+    def online_update(self, x, label):
+        current_class = self.class_counter[label]
+        class_weights = self.weights[:, label]
 
-        self.class_counter[y.label] += 1
+        print(current_class)
+        print(class_weights.shape)
+        class_weights = torch.mul(current_class.item(), class_weights) + x
+        class_weights = torch.div(
+            class_weights, (current_class.item() + 1)
+        )
+        with torch.no_grad():
+            self.weights[:, label] = class_weights
+
+        self.class_counter[label] += 1
