@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from model.conv_net_pt import Net
 from model.siesta_class import SiestaClassifier
+from model.siesta_g_net import GNet
 
 
 class SiestaNet(nn.Module):
@@ -14,9 +15,13 @@ class SiestaNet(nn.Module):
         conv_pt.eval()
 
         self.h_net = conv_pt
-        self.g_layers = nn.Sequential(nn.Linear(512 * 2 * 2, 1024))
+        self.g_layers = GNet(512 * 2 * 2, 1024)
 
-        self.f_classifier = SiestaClassifier(num_classes, 1024)
+        self.f_classifier = SiestaClassifier(
+            self.g_layers.get_output_features(), num_classes
+        )
+
+        self.register_buffer("stored_samples_nr", torch.zeros(num_classes))
 
     def forward(self, x, sleep=False):
 
@@ -35,10 +40,11 @@ class SiestaNet(nn.Module):
         x = self.h_net.bn5(self.h_net.conv5(x))
         lr = torch.relu(x)
 
-        x = lr.view(-1, 512 * 2 * 2)
-        x = self.g_layers(x)
-        out, z = self.f_classifier(x)
+        lr = lr.view(-1, 512 * 2 * 2)
+        x = self.g_layers(lr)
+        #x = x.squeeze()
+        out, z = self.f_classifier(x, sleep)
         if sleep:
             return out
         else:
-            return out, z, lr
+            return out, z.squeeze(), lr

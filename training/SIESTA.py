@@ -1,28 +1,60 @@
+import random
+import warnings
 from collections import defaultdict
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Optional, Union
 
 import torch
+from avalanche.training.plugins import EvaluationPlugin
+from avalanche.training.plugins.evaluation import default_evaluator
 from avalanche.training.templates import SupervisedTemplate
 from avalanche.training.templates.strategy_mixin_protocol import CriterionType
+from torch.optim import SGD
 from torch.utils.data import DataLoader
 
 from model.siesta_net import SiestaNet
 
 
 class SIESTA(SupervisedTemplate):
+    """
+    SIESTA pre_alpha implementation, currently implementing the model embedded in the
+    strategy itslef, this will be changed in future iterations to allow for the
+    flexibility of the 3 distinct segments of the network (H,G,F).
+    :param num_classes: The number of classes in the dataset, assumes siesta_net model
+    :param criterion: The loss function used to train the model, defaults to nll_loss
+    :param optimizer: The optimizer used to train the model
+    :param lr: The learning rate used to train the model
+    :param tau: The temperature parameter used in the softmax output layer check SiestaNet for more details
+    :param seed: The seed used to initialize the model
+    :param sleep_frequency: The frequency at which the sleep phase is initiated #classes
+    :param sleep_mb_size: The size of the minibatch used during the sleep phase
+    :param sleep_n_iter: The number of iterations used during the sleep phase
+    #samples (to be changed to Bytes)
+    :param memory_size: The size of the memory buffer
+    :param device: The device used to train the model, defaults to cpu
+    :param evaluator: The evaluator used to evaluate the model
+    :param eval_every: The frequency at which the model is evaluated
+
+    """
+
     def __init__(
         self,
-        loss: CriterionType = torch.nn.functional.nll_loss(),
-        optimizer: torch.optim.Optimizer = None,  # Optimizer for sleep phase
+        *,
+        num_classes: int = 100,
+        criterion: CriterionType = torch.nn.NLLLoss(),
         lr: float = 0.001,
-        tau=1.0,
+        tau: float = 1.0,
         seed: Optional[int] = None,
         sleep_frequency: int = 10,
         sleep_mb_size: int = 32,
-        sleep_n_iter: int = 100,
-        memory_size: int = 1000,
-        num_classes: int = 100,
-        device=None,
+        sleep_n_iter: int = 1000,
+        eval_mb_size: int = 32,
+        memory_size: int = 100000000,
+        device: Union[str, torch.device] = "cpu",
+        evaluator: Union[
+            EvaluationPlugin, Callable[[], EvaluationPlugin]
+        ] = default_evaluator,
+        eval_every: int = -1,
+        **kwargs,
     ):
 
         # As of this implementation the SIESTA strategy only supports the use
@@ -31,9 +63,7 @@ class SIESTA(SupervisedTemplate):
         # LRs from.
 
         model = SiestaNet(num_classes=num_classes)
-        self.loss = loss
-        self.sleep_loss = loss
-        self.optimizer = optimizer
+        self.sleep_criterion = criterion
         self.lr = lr
         self.tau = tau
         self.sleep_mb_size = sleep_mb_size
@@ -41,121 +71,182 @@ class SIESTA(SupervisedTemplate):
         self.memory_size = memory_size
         self.num_classes = num_classes
         # Register buffer with mem_size x latent_dim samples
-        self.register_buffer("stored_samples_nr", torch.zeros(memory_size))
         self.replay_memory = defaultdict(list)
         self.sleep_frequency = sleep_frequency
+        self.stored_samples_nr = model.stored_samples_nr
 
-        super().__init__(
+        super(SIESTA, self).__init__(
             model=model,
-            optimizer=optimizer,
-            loss=loss,
+            optimizer=None,  # No optimizer for SIESTA online updates
+            criterion=criterion,
+            train_mb_size=1,
+            train_epochs=1,
+            eval_mb_size=eval_mb_size,
             device=device,
+            plugins=[],
+            evaluator=evaluator,
+            eval_every=eval_every,
+            **kwargs,
         )
 
-        def store_sample(self, lr, label):
-            # Also need to include OPQ to quantize vectors in
-            if self.stored_samples_nr == self.memory_size:
-                # FIFO behaviour, this needs to be changed
-                self.replay_memory[label].pop(0)
+    @torch.no_grad()
+    def store_sample(self, lr, label):
+        # Also need to include OPQ to quantize vectors in
+        total_samples = torch.sum(self.stored_samples_nr)
+        if total_samples == self.memory_size:
+            # find class with most samples, remove one randomly
+            max_label = torch.argmax(self.stored_samples_nr).item()
+            random_sample = random.randrange(0, len(self.replay_memory[max_label]))
+            self.replay_memory[max_label].pop(random_sample)
+            self.stored_samples_nr[max_label] -= 1
 
-            self.replay_memory[label].append(lr)
-            total_items = sum([len(v) for v in self.replay_memory.values()])
-            self.stored_samples_nr = torch.tensor(total_items)
+        label = label.item()
+        self.replay_memory[label].append(lr)
+        self.stored_samples_nr[label] += 1
 
-        def sample_memory(self, mb_size):
-            minibatch = []
-            labels = list(self.replay_memory.keys())
-            n_labels = len(labels)
+    @torch.no_grad()
+    def sample_memory(self, mb_size):
+        minibatch = []
+        labels = list(self.replay_memory.keys())
+        n_labels = len(labels)
 
-            samples_per_label = sleep_mb_size // n_labels
+        samples_per_label = mb_size // n_labels
+        if samples_per_label == 0:
+            print("What happened")
+            print("mb_size", mb_size)
+            print("n_labels", n_labels)
+            print("Here are the labels!", labels)
 
-            # Uniform Sampling
-            for label in labels:
-                minibatch.extend(
-                    torch.random.sample(
-                        self.replay_memory[label],
-                        min(samples_per_label, len(self.memory_buffer[label])),
-                    )
+        # Uniform Sampling
+        for label in labels:
+            minibatch.extend(
+                random.sample(
+                    self.replay_memory[label],
+                    min(samples_per_label, len(self.replay_memory[label])),
                 )
-            samples = torch.stack(minibatch)
-            minibatch_labels = torch.tensor(labels).repeat(samples_per_label)[
-                : samples.shape[0]
-            ]
-
-            return samples, minibatch_labels
-
-        def sleep_training(self, sleep_mb_size):
-            # Sample uniformly from the replay memory_size
-            for i in range(sleep_n_iter):
-                print("-------->> Initiating Sleep Phase <<--------")
-                self.optimizer.zero_grad()
-                mb_x, mb_y = sample_memory(sleep_mb_size)
-                mb_out = self.model(mb_x, sleep=True)
-                self.sleep_loss = self.sleep_loss(torch.log(mb_out), self.mb_y)
-                self.sleep_loss.backward()
-                self.optimizer.step()
-
-            print("-------->> Sleep Phase Complete <<--------")
-            print("Loss after sleep phase:", self.sleep_loss.item())
-
-        def _before_training_exp(self, **kwargs):
-
-            if self.clock.train_exp_counter % self.sleep_frequency == 0:
-                sleep_training(self.sleep_mb_size)
-
-            super._before_training_exp(**kwargs)
-
-        def make_train_dataloader(
-            self, num_workers=0, shuffle=True, persistent_workers=False, **kwargs
-        ):
-            """
-            How to implement this as two dataloaders?
-            I would require a sleep dataloader that is ued to train the model during sleep phase, aka with a given batch size
-            But I would also require a dataloader that operates during the awake phase, essentially providing a single minibatch per iteration
-            ACTUALLY, I think a single dataloader is required, as the second dataloader will simply be a byproduct of the memory buffer,
-            """
-            # The data loader will only work in the awake phase. As such it will only load a single sample from an experience
-            # This is because the sleep phase will be handled by the memory buffer, in a seperate step
-            assert self.adapted_dataset is not None, "No dataset has been provided."
-
-            collate_fn = (
-                self.adapted_dataset.collate_fn
-                if hasattr(self.adapted_dataset, "collate_fn")
-                else None
             )
+        samples = torch.stack(minibatch)
+        labels = [int(label) for label in labels]
+        minibatch_labels = torch.tensor(labels).repeat(samples_per_label)[
+            : samples.shape[0]
+        ]
 
-            other_dataloader_args = self._obtain_common_dataloader_parameters(
-                batch_size=1,
-                persistent_workers=persistent_workers,
-                num_workers=num_workers,
-                shuffle=shuffle,
-                **kwargs
-            )
+        return samples, minibatch_labels
 
-            self.dataloader = DataLoader(
-                self.adapted_dataset,
-                collate_fn=collate_fn,
-                **other_dataloader_args
-                # Inspired by the AR1 implementation (maybe this is actually not fully needed...)
-            )
+    def sleep_training(self, sleep_mb_size):
+        # Sample uniformly from the replay memory_size
+        optimizer = SGD(self.model.parameters(), lr=self.lr)
 
-        def training_epoch(self, **kwargs):
-            for mb_it, self.mbatch in enumerate(self.dataloader):
-                self._unpack_minibatch(self.mbatch)
-                self._before_training_iteration(**kwargs)
+        print("-------->> Sleep Phase Initiated <<--------")
+        for i in range(self.sleep_n_iter):
+            optimizer.zero_grad()
+            mb_x, mb_y = self.sample_memory(sleep_mb_size)
+            mb_out = self.model.g_layers(mb_x)
+            mb_out = self.model.f_classifier(mb_out, sleep=True)
+            sleep_loss = self.sleep_criterion(mb_out, mb_y)
+            if (i % 100) == 0:
+                print(f"Loss at iteration {i}: {sleep_loss.item()}")
+            sleep_loss.backward()
+            optimizer.step()
 
-                self.optimizer.zero_grad()
+        print(f"-------->> Sleep Phase Complete, {self.sleep_n_iter} <<--------")
+        print("Loss after sleep phase:", sleep_loss)
 
-                self._before_forward(**kwargs)
-                self.mb_output, self.z, self.lr = self.model(self.mb_x, sleep=False)
-                store_sample(self.lr, self.mb_y)
-                self.loss = self.loss(torch.log(self.mb_output), self.mb_y)
+    def forward(self, sleep=False):
+        """Compute the model's output given the current mini-batch."""
 
-                self._after_forward(**kwargs)
-                self._after_loss_backward(**kwargs)
-                # Optimization step
-                self._before_update(**kwargs)
-                self.model.f_classifier.online_update(self.z, self.mb_y)
-                self._after_update(**kwargs)
+        self.model.eval()
+        if sleep:
+            out = self.model(self.mb_x, sleep)
+        else:  # no task labels
+            out, z, lr = self.model(self.mb_x, sleep)
+        if sleep:
+            return out
+        else:
+            return out, z, lr
 
-                self._after_training_iteration(**kwargs)
+    def _before_training_exp(self, **kwargs):
+
+        labels = list(self.replay_memory.keys())
+        n_labels = len(labels)
+        if n_labels % self.sleep_frequency == 0 and n_labels != 0:
+            self.sleep_training(self.sleep_mb_size)
+
+        super()._before_training_exp(**kwargs)
+
+    def make_train_dataloader(
+        self, num_workers=0, shuffle=True, persistent_workers=False, **kwargs
+    ):
+        """
+        How to implement this as two dataloaders?
+        I would require a sleep dataloader that is ued to train the model during sleep phase, aka with a given batch size
+        But I would also require a dataloader that operates during the awake phase, essentially providing a single minibatch per iteration
+        ACTUALLY, I think a single dataloader is required, as the second dataloader will simply be a byproduct of the memory buffer,
+        """
+        # The data loader will only work in the awake phase. As such it will only load a single sample from an experience
+        # This is because the sleep phase will be handled by the memory buffer, in a seperate step
+        assert self.adapted_dataset is not None, "No dataset has been provided."
+
+        collate_fn = (
+            self.adapted_dataset.collate_fn
+            if hasattr(self.adapted_dataset, "collate_fn")
+            else None
+        )
+
+        other_dataloader_args = self._obtain_common_dataloader_parameters(
+            batch_size=1,
+            persistent_workers=persistent_workers,
+            num_workers=num_workers,
+            shuffle=shuffle,
+            **kwargs,
+        )
+
+        self.dataloader = DataLoader(
+            self.adapted_dataset,
+            collate_fn=collate_fn,
+            **other_dataloader_args,
+            # Inspired by the AR1 implementation (maybe this is actually not fully required...)
+        )
+
+    def training_epoch(self, **kwargs):
+        for mb_it, self.mbatch in enumerate(self.dataloader):
+            self._unpack_minibatch()
+            self._before_training_iteration(**kwargs)
+            self.loss = self._make_empty_loss()
+
+            # Forward pass
+            self._before_forward(**kwargs)
+            self.mb_output, self.z, self.latent_act = self.forward(sleep=False)
+
+            self.store_sample(self.latent_act, self.mb_y)
+            self._after_forward(**kwargs)
+
+            # Loss computation
+            self.loss = self.criterion()
+
+            # Optimization step
+            self._before_update(**kwargs)
+            self.model.f_classifier.online_update(self.z, self.mb_y.item())
+            self._after_update(**kwargs)
+
+            self._after_training_iteration(**kwargs)
+
+    def eval_epoch(self, **kwargs):
+        """Evaluation loop over the current `self.dataloader`."""
+        for self.mbatch in self.dataloader:
+            self._unpack_minibatch()
+            self._before_eval_iteration(**kwargs)
+
+            self._before_eval_forward(**kwargs)
+            self.mb_output = self.forward(sleep=True)
+            self._after_eval_forward(**kwargs)
+            self.loss = self.criterion()
+
+            self._after_eval_iteration(**kwargs)
+
+    def make_optimizer(self, **kwargs):
+        """SIESTA online updates require no optimizer."""
+        pass
+
+
+__all__ = ["SIESTA"]
