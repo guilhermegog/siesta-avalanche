@@ -11,7 +11,6 @@ class GNet(nn.Module):
             nn.Linear(input_features, input_features),
             nn.ReLU(),
             nn.Linear(input_features, output_features),
-            
         )
 
     def forward(self, x):

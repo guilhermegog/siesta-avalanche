@@ -40,7 +40,7 @@ class SIESTA(SupervisedTemplate):
         self,
         *,
         num_classes: int = 100,
-        criterion: CriterionType = torch.nn.NLLLoss(),
+        criterion: CriterionType = torch.nn.CrossEntropyLoss(),
         lr: float = 0.001,
         tau: float = 1.0,
         seed: Optional[int] = None,
@@ -82,7 +82,6 @@ class SIESTA(SupervisedTemplate):
             train_mb_size=1,
             train_epochs=1,
             eval_mb_size=eval_mb_size,
-            device=device,
             plugins=[],
             evaluator=evaluator,
             eval_every=eval_every,
@@ -126,6 +125,7 @@ class SIESTA(SupervisedTemplate):
                 )
             )
         samples = torch.stack(minibatch)
+        samples = torch.squeeze(samples, dim=1)
         labels = [int(label) for label in labels]
         minibatch_labels = torch.tensor(labels).repeat(samples_per_label)[
             : samples.shape[0]
@@ -142,7 +142,8 @@ class SIESTA(SupervisedTemplate):
             optimizer.zero_grad()
             mb_x, mb_y = self.sample_memory(sleep_mb_size)
             mb_out = self.model.g_layers(mb_x)
-            mb_out = self.model.f_classifier(mb_out, sleep=True)
+            mb_out = self.model.f_net(mb_out)
+            mb_out = self.model.f_classifier(mb_out)
             sleep_loss = self.sleep_criterion(mb_out, mb_y)
             if (i % 100) == 0:
                 print(f"Loss at iteration {i}: {sleep_loss.item()}")
@@ -151,6 +152,13 @@ class SIESTA(SupervisedTemplate):
 
         print(f"-------->> Sleep Phase Complete, {self.sleep_n_iter} <<--------")
         print("Loss after sleep phase:", sleep_loss)
+
+    def online_update(self, z, label):
+        means = self.model.f_classifier.weight
+        updated_means = self.stored_samples_nr[label] * means[label,] + z
+        updated_means = updated_means / (self.stored_samples_nr[label] + 1)
+        with torch.no_grad():
+            means[label,] = updated_means
 
     def forward(self, sleep=False):
         """Compute the model's output given the current mini-batch."""
@@ -226,7 +234,7 @@ class SIESTA(SupervisedTemplate):
 
             # Optimization step
             self._before_update(**kwargs)
-            self.model.f_classifier.online_update(self.z, self.mb_y.item())
+            self.online_update(self.z, self.mb_y.item())
             self._after_update(**kwargs)
 
             self._after_training_iteration(**kwargs)
