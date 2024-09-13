@@ -9,7 +9,7 @@ from model.siesta_g_net import GNet
 class SiestaNet(nn.Module):
     def __init__(self, num_classes):
         super().__init__()
-        pretrained_layers = torch.load("model/conv_layers.pth")
+        pretrained_layers = torch.load("model/conv_layers_cuda.pth")
         conv_pt = Net()
         conv_pt.load_state_dict(pretrained_layers, strict=False)
         conv_pt.eval()

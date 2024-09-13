@@ -36,7 +36,7 @@ class CosineLinear(nn.Module):
 
     def forward(self, input):
         if self.bias is not None:
-            input = torch.cat((input, (torch.ones(len(input), 1))), dim=1)
+            input = torch.cat((input, (torch.ones(len(input), 1).cuda("cuda:2"))), dim=1)
             concat_weight = torch.cat((self.weight, self.bias), dim=1)
             out = F.linear(
                 F.normalize(input, p=2, dim=1, eps=1e-8),

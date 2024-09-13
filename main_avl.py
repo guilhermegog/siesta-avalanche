@@ -6,7 +6,12 @@ from training.siesta import SIESTA
 
 
 def main():
-    device = torch.device("cpu" if torch.backends.mps.is_available() else "cpu")
+    if(torch.cuda.is_available()):
+        device = torch.device("cuda:2")
+        print(device)
+    else:
+        device = torch.device(
+            "mps" if torch.backends.mps.is_available() else "cpu")
 
     # Define transforms for the CIFAR-100 dataset
     criterion = nn.CrossEntropyLoss()
@@ -20,6 +25,7 @@ def main():
         sleep_mb_size=128,
         sleep_n_iter=int(10e3),
     )
+    print(strategy.device)
 
     # Train the model
     results = []
