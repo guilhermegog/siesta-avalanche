@@ -28,7 +28,7 @@ class SIESTA(SupervisedTemplate):
     :param lr: The learning rate used to train the model
     :param tau: The temperature parameter used in the softmax output layer check SiestaNet for more details
     :param seed: The seed used to initialize the model
-    :param sleep_frequency: The frequency at which the sleep phase is initiated #classes
+    :param sleep_frequency: The frequency at which the sleep phase is initiated #experiences
     :param sleep_mb_size: The size of the minibatch used during the sleep phase
     :param sleep_n_iter: The number of iterations used during the sleep phase
     # samples (to be changed to Bytes)
@@ -47,7 +47,7 @@ class SIESTA(SupervisedTemplate):
         lr: float = 0.001,
         tau: float = 1.0,
         seed: Optional[int] = None,
-        sleep_frequency: int = 10,
+        sleep_frequency: int = 2,
         sleep_mb_size: int = 32,
         sleep_n_iter: int = 1000,
         eval_mb_size: int = 32,
@@ -73,6 +73,7 @@ class SIESTA(SupervisedTemplate):
         self.sleep_n_iter = sleep_n_iter
         self.memory_size = memory_size
         self.num_classes = num_classes
+        self.sleep_frequency = sleep_frequency
         # Register buffer with mem_size x latent_dim samples
         buffer = get_buffer()
 
@@ -81,6 +82,7 @@ class SIESTA(SupervisedTemplate):
         self.class_id_to_item_ix_dict = buffer["class_id_to_item_ix_dict"]
         self.recent_class_list = buffer["recent_class_list"]
         self.total_class_list = buffer["recent_class_list"]
+        self.curr_buff = len(self.rehearsal_ixs) - 1
 
         super(SIESTA, self).__init__(
             self,
@@ -116,12 +118,12 @@ class SIESTA(SupervisedTemplate):
     @torch.no_grad()
     def store_sample(self, feat, labels, item_ixs):
 
-        for x, y, item_ix in zip(feat, labels, item_ixs):
-            self.latent_dict[int(item_ix.numpy())] = [x, y.numpy()]
-            self.rehearsal_ixs.append(int(item_ix.numpy()))
-            self.class_id_to_item_ix_dict[int(y.numpy())].append(
-                int(item_ix.numpy()))
-            if self.count >= self.max_buffer_size:
+        for x, y, item_ix in zip(feat, labels):
+            self.latent_dict[self.curr_buff] = [x, y.numpy()]
+            self.rehearsal_ixs.append(self.curr_buff)
+            self.class_id_to_item_ix_dict[int(
+                y.numpy())].append(self.curr_buff)
+            if self.curr_buff > self.max_buffer_size:
                 max_key = max(
                     self.class_id_to_item_ix_dict,
                     key=lambda x: len(self.class_id_to_item_ix_dict[x]),
@@ -132,7 +134,7 @@ class SIESTA(SupervisedTemplate):
                 self.latent_dict.pop(rand_item_ix)
                 self.rehearsal_ixs.remove(rand_item_ix)
             else:
-                self.count += 1
+                self.curr_buff += 1
 
     @torch.no_grad()
     def sample_memory(self):
@@ -210,31 +212,35 @@ class SIESTA(SupervisedTemplate):
             if (i+1) % 5000 == 0 or i == 0 or (i+1) == num_iter:
                 print("Iter:", (i+1), "-- Loss: %1.5f" % total_loss.avg)
 
-    def online_update(self, z, label):
-        self.online_learner.fit(z, label)
-        mean = self.online_learner.grab_mean(label)
-        with torch.no_grad():
-            self.model.f_net.state_dict(
-            )["3.weight"][label].copy_(mean)
+    def online_update(self, z, label, recent_labels):
+        recent_class_list = np.unique(recent_labels.numpy())
+        for x, y in zip(z, label):
+            self.aol.fit(z, label.view(1,))
+        bias = torch.ones(1).cuda()
+        for k in recent_class_list:
+            k = torch.tensor(k, dtype=torch.int32)
+            mu_k = self.aol.grab_mean(k)
+            self.classifier_F.state_dict()["model.classifier.3.weight"][k] = mu_k
+            self.classifier_F.state_dict()["model.classifier.3.bias"][k] = bias
+
 
     def forward(self, sleep=False):
         """Compute the model's output given the current mini-batch."""
 
         self.model.eval()
-        feat = self.classifier_G
-        out = self.classifier_F
-        return out, feat
+        feat = self.classifier_G(self.mb_it)
+        penult_feat = self.classifier_F.get_penultimate_feature(feat)
+        return penult_feat, feat
 
-    def _before_training_exp(self, **kwargs):
+    def eval_forward(self, sleep=False):
+        """Compute the model's output given the current mini-batch."""
 
-        labels = list(self.replay_memory.keys())
-        n_labels = len(labels)
-        if n_labels % self.sleep_frequency == 0 and n_labels != 0:
-            self.sleep_training(self.sleep_mb_size)
+        self.model.eval()
+        feat = self.classifier_G(self.mb_it)
+        out = self.classifier_F(feat)
+        return out
 
-        super()._before_training_exp(**kwargs)
-
-    def get_data_loader(
+    def make_train_dataloader(
         self,
         images_dir,
         label_dir,
@@ -242,7 +248,7 @@ class SIESTA(SupervisedTemplate):
         min_class,
         max_class,
         batch_size=128,
-        return_item_ix=False,
+        return_item_ix=True,
     ):
 
         data_loader = get_imagenet_data_loader(
@@ -258,27 +264,36 @@ class SIESTA(SupervisedTemplate):
         return data_loader
 
     def training_epoch(self, **kwargs):
-        for mb_it, self.mbatch in enumerate(self.dataloader):
-            self._unpack_minibatch()
-            self._before_training_iteration(**kwargs)
-            self.loss = self._make_empty_loss()
+        n_exp = self.clock.train_exp_counter
+        recent_labels = torch.zeros((len(self.dataloader.dataset)))
+        start = 0
+        if(n_exp != 0):
+            for mb_it, self.mbatch in enumerate(self.dataloader):
+                self._unpack_minibatch()
+                self._before_training_iteration(**kwargs)
+                self.loss = self._make_empty_loss()
+                end = start + self.mb_y.shape[0]
+                recent_labels[start:end]
+                start = end
+                # Forward pass
+                self._before_forward(**kwargs)
+                self.mb_output, feature = self.forward()
+                self.store_sample(feature, self.mb_y)
+                self._after_forward(**kwargs)
 
-            # Forward pass
-            self._before_forward(**kwargs)
-            self.mb_output, feature = self.forward()
+                # Loss computation
+                self.loss = self.criterion()
 
-            self.store_sample(feature, self.mb_y)
-            self._after_forward(**kwargs)
+                # Optimization step
+                self._before_update(**kwargs)
+                self.online_update(self.mb_output, self.mb_y, recent_labels)
+                if(n_exp != 0 and n_exp % self.sleep_frequency == 0):
+                    self.sleep_training(self.sleep_mb_size)
+                self._after_update(**kwargs)
 
-            # Loss computation
-            self.loss = self.criterion()
-
-            # Optimization step
-            self._before_update(**kwargs)
-            self.online_update(z, self.mb_y)
-            self._after_update(**kwargs)
-
-            self._after_training_iteration(**kwargs)
+                self._after_training_iteration(**kwargs)
+            else:
+                pass
 
     def eval_epoch(self, **kwargs):
         """Evaluation loop over the current `self.dataloader`."""
@@ -287,7 +302,7 @@ class SIESTA(SupervisedTemplate):
             self._before_eval_iteration(**kwargs)
 
             self._before_eval_forward(**kwargs)
-            self.mb_output, z, latent_act = self.forward()
+            self.mb_output  = self.eval_forward()
             self._after_eval_forward(**kwargs)
             self.loss = self.criterion()
 
