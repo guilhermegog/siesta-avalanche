@@ -18,7 +18,7 @@ def main():
     benchmark = SplitCIFAR100(n_experiences=10, return_task_id=False)
 
     strategy = SIESTA(
-        num_classes=100,
+        num_classes=1000,
         criterion=criterion,
         device=device,
         memory_size=100000,

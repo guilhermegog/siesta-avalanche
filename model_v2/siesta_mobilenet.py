@@ -1,18 +1,13 @@
 import torch
 import math
-import copy
-import warnings
-import torchvision
 from functools import partial
 from torch import nn, Tensor
-import torch.optim as optim
 from torch.nn.parameter import Parameter
 from torch.nn import functional as F
 from torch.nn import init
 from typing import Any, Callable, Dict, List, Optional, Sequence
 from torchvision.models.mobilenetv2 import _make_divisible  # ConvBNActivation
-from typing import Any, Callable, Dict, Optional, Tuple, TypeVar, Union
-
+from typing import Any, Callable, Dict, Optional, Tuple, TypeVar
 #### This scripts is MobileNet with Cosine FC layer ####
 
 
@@ -454,7 +449,7 @@ class SplitModel(nn.Module):
         self.avgpool = original_model.avgpool
 
         # Classifier
-        self.f_net = original_model.classifiermodel = mobilenet_v3_large()
+        self.f_net = original_model.classifier
 
     def get_h_net(self):
         return self.h_net
@@ -483,6 +478,25 @@ class SplitModel(nn.Module):
         return out
 
 
+class LargeMobileNet(nn.Module):
+    def __init__(self):
+        super(LargeMobileNet, self).__init__()
+        self.model = mobilenet_v3_large()
+
+    def forward(self, x, feat=False):
+        out = self.model.features(x)
+        out = self.model.avgpool(out)
+        out = torch.flatten(out, 1)  # dim N x 960
+
+        if feat:
+            features = self.model.classifier[0](out)  # N x 1280
+            out = self.model.classifier(out)  # N x 1000
+            return features, out
+
+        out = self.model.classifier(out)  # N x 1000
+        return out
+
+
 def load_partial(model,  checkpoint, part="all"):
     state_dict = checkpoint["state_dict"]
     if part == 'h_net':
@@ -502,3 +516,63 @@ def load_partial(model,  checkpoint, part="all"):
 
     model.load_state_dict(partial_dict, strict=False)
     return model
+
+
+class MobNet_StartAt_Layer8(nn.Module):
+    def __init__(self, num_classes=None):
+        super(MobNet_StartAt_Layer8, self).__init__()
+
+        self.model = mobilenet_v3_large(pretrained=False)
+
+        for _ in range(0, 8):  # remove first 8 layers
+            del self.model.features[0]  # dim: N x 80 x 14 x 14
+
+        if num_classes is not None:
+            print('Changing output layer to contain %d classes.' % num_classes)
+            self.model.classifier[3] = CosineLinear(1280, num_classes)
+
+    def forward(self, x, feat=False):
+        out = self.model.features(x)
+        out = self.model.avgpool(out)
+        out = torch.flatten(out, 1)  # dim N x 960
+
+        if feat:
+            features = self.model.classifier[0](out)  # N x 1280
+            out = self.model.classifier(out)  # N x 1000
+            return features, out
+
+        out = self.model.classifier(out)  # N x 1000
+        return out
+
+    def get_penultimate_feature(self, x):
+        out = self.model.features(x)
+        out = self.model.avgpool(out)
+        out = torch.flatten(out, 1)  # N x 960
+        # raw features before activation # N x 1280
+        out = self.model.classifier[0](out)
+        return out
+
+
+# Block-8
+class BaseMobNetClassifyAfterLayer8(nn.Module):
+    def __init__(self, num_del=0, num_classes=None):
+        super(BaseMobNetClassifyAfterLayer8, self).__init__()
+
+        self.model = mobilenet_v3_large(pretrained=False)
+
+        for _ in range(0, num_del):
+            del self.model.features[8][-1]  # check here!
+
+        if num_classes is not None:
+            print("Changing num_classes to {}".format(num_classes))
+            self.model.classifier[3] = CosineLinear(1280, num_classes)
+
+    def forward(self, x):
+        out = self.model(x)
+        return out
+
+
+class MobNetClassifyAfterLayer8(BaseMobNetClassifyAfterLayer8):
+    def __init__(self, num_classes=None):
+        super(MobNetClassifyAfterLayer8, self).__init__(
+            num_del=0, num_classes=num_classes)

@@ -139,7 +139,7 @@ def main():
     # Create and load the model
     model = adapt_mbnet(num_classes=100).to(device)
     model = load_partial_model(
-        model, 'checkpoints/best_cosine_softmax_loss_SWAV_sgd_layerlr02_step_MIXUP_CUTMIX_50e_100c.pth', num_frozen_layers=8)
+        model, 'checkpoints/swav_100c_2000e_mobilenet_modified_gelu_updated.pth', num_frozen_layers=8)
 
     param_groups = create_param_groups(model)
 

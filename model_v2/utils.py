@@ -106,7 +106,6 @@ def adapt_mbnet(num_classes=100):
 
     model.classifier[3] = CosineLinear(
         model.classifier[3].in_features, num_classes)
-    print(model.features)
     return model
 
 
@@ -114,11 +113,24 @@ def load_partial_model(model, checkpoint_path, num_frozen_layers=8):
     checkpoint = torch.load(checkpoint_path)
     model_dict = model.state_dict()
 
+    old_state = checkpoint['state_dict']
+    
     # Filter out layers after the 8th layer
     pretrained_dict = {k: v for k, v in checkpoint.items(
-    ) if k in model_dict and 'features.' in k and int(k.split('.')[1]) < num_frozen_layers}
-    model_dict.update(pretrained_dict)
-    model.load_state_dict(model_dict, strict=True)
+    ) if k in model_dict and 'features.' in k}
+
+    pretained_dict = {}
+    for k,v in model_dict.items(): 
+        if('model.'+k in old_state ):
+            pretrained_dict[k] = old_state['model.'+k]
+        else: 
+            pretrained_dict[k] = v
+
+    for k in old_state:
+        assert torch.equal(old_state[k], pretrained_dict[k.replace("model.","")]), k
+
+    print("Assertion passed!")
+    new_state = model.state_dict()
 
     # Freeze the first 8 layers
     for name, param in model.named_parameters():
@@ -127,6 +139,8 @@ def load_partial_model(model, checkpoint_path, num_frozen_layers=8):
 
     return model
 
+def load_fine_tune_model(model, checkpoint_path, num_layer):
+    return
 
 def save_partial_model(model, save_path, start_layer=8):
     state_dict = model.state_dict()
