@@ -144,6 +144,8 @@ class SIESTA(SupervisedTemplate):
             labels[ii] = torch.from_numpy(self.latent_dict[v][1])
             ixs[ii] = v
 
+        labels = labels.numpy()
+        ixs = ixs.numpy()
         class_list = np.unique(labels)
         replay_idxs = []
         k = 1
