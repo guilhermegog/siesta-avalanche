@@ -263,7 +263,6 @@ class SIESTA(SupervisedTemplate):
 
         # Model Adaptation (e.g. freeze/add new units)
         self.check_model_and_optimizer(**kwargs)
-
         super()._before_training_exp(**kwargs)
 
     def training_epoch(self, **kwargs):

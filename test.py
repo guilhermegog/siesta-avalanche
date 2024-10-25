@@ -33,7 +33,6 @@ def main():
         else:
             end = 50
         end_ix = start+end
-
         exp_dict[i] = arr[start:end_ix]
         start = end_ix
     n_exp = 19
