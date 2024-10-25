@@ -1,6 +1,5 @@
 from benchmarks.imagenet_utils import get_imagenet_dataset
 from avalanche.benchmarks import nc_benchmark
-from avalanche.benchmarks import AvalancheDataset
 from avalanche.benchmarks.utils import DataAttribute, make_avalanche_dataset
 import time
 import numpy as np

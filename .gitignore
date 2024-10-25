@@ -166,3 +166,5 @@ cython_debug/
 # Pre-trained Files
 model/pre_trained/
 checkpoints/
+wandb/
+benchmarks/imagenet_files/

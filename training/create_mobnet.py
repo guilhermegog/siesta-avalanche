@@ -149,7 +149,7 @@ def create_classifiers():
     and as implemented in the original source code: 
     https://github.com/yousuf907/SIESTA/tree/main
     """
-    ckpt = "/space/gguedes/Documents/sanity_check/checkpoints/swav_100c_2000e_mobilenet_modified_gelu_updated.pth"
+    ckpt = "/space2/gguedes/Documents/sanity_check/checkpoints/swav_100c_2000e_mobilenet_modified_gelu_updated.pth"
     classifier_F = build_classifier(
         "MobNet_StartAt_Layer8", ckpt, num_classes=1000)
     core_model = build_classifier(
@@ -163,6 +163,7 @@ def create_classifiers():
         classifier_F, old_state['state_dict'], should_resume_all_params=False)
     old_state = old_state["state_dict"]
     new_state = classifier_F.state_dict()
+    print()
     for k in old_state:
         assert torch.equal(old_state[k].cpu(),
                            new_state[k[len("module."):]]), k
