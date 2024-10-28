@@ -90,7 +90,7 @@ class SIESTA(SupervisedTemplate):
             model=model,
             optimizer=None,  # No optimizer for SIESTA online updates
             criterion=criterion,
-            train_mb_size=512,
+            train_mb_size=eval_mb_size,
             train_epochs=1,
             eval_mb_size=eval_mb_size,
             plugins=[],
@@ -138,6 +138,7 @@ class SIESTA(SupervisedTemplate):
                 max_class_list.remove(rand_item_ix)
                 self.latent_dict.pop(rand_item_ix)
                 self.rehearsal_ixs.remove(rand_item_ix)
+                self.curr_buff += 1
             else:
                 self.curr_buff += 1
 
@@ -176,7 +177,7 @@ class SIESTA(SupervisedTemplate):
         return replay_idxs
 
     def sleep_training(self, sleep_mb_size):
-        # Sample uniformly from the replay memory_size
+        # Sample uniformly1from the replay memory_size
 
         total_loss = CMA()
         params = self.get_layerwise_params(self.classifier_F, self.lr)

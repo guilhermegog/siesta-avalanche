@@ -14,9 +14,11 @@ import os
 torch.multiprocessing.set_sharing_strategy('file_system')
 torch.set_num_threads(16)
 os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["HTTPS_PROXY"]= "http://icdvm14.ewi.tudelft.nl:3128"
 print(f"Number of GPUs visible: {torch.cuda.device_count()}")
 print(f"Current GPU: {torch.cuda.current_device()}")
 print(f"GPU name: {torch.cuda.get_device_name(0)}")
+
 
 
 def main():
@@ -57,12 +59,13 @@ def main():
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[
                              0.229, 0.224, 0.225])
     ])
+
     wandb_logger = WandBLogger(
         project_name="siesta_avalanche",
         run_name="base_run_imagenet1k",
         log_artifacts = False,
     )
-
+    
     benchmark = SplitImageNet(dataset_root="/space/gguedes/datasets/imagenet1k",
                               n_experiences=19,
                               per_exp_classes=exp_dict,
@@ -74,10 +77,10 @@ def main():
                               )
     eval_plugin = EvaluationPlugin(accuracy_metrics(epoch=True, experience=True, epoch_running=True),
                                    accuracy_metrics_top5(epoch = True, experience=True, epoch_running=True),
-                                   loggers=[InteractiveLogger(), wandb_logger])
+                                   loggers=[InteractiveLogger(),wandb_logger])
 
     strategy = SIESTA(num_classes=1000, criterion=torch.nn.CrossEntropyLoss(), lr=1.6, tau=1, seed=None, sleep_frequency=2, sleep_mb_size=512, eval_mb_size=1024, memory_size=959665,
-                      device="cuda", evaluator=eval_plugin, eval_every=0)
+                      device="cuda", evaluator=eval_plugin, eval_every=-1)
     print('Starting experiment...')
     results = []
     eval_experiences = []
