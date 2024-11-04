@@ -532,9 +532,13 @@ class MobNet_StartAt_Layer8(nn.Module):
             self.model.classifier[3] = CosineLinear(1280, num_classes)
 
     def forward(self, x, feat=False):
+        print(x.shape)
         out = self.model.features(x)
+        print(out.shape)
         out = self.model.avgpool(out)
+        print(out.shape)
         out = torch.flatten(out, 1)  # dim N x 960
+        print(out.shape)
 
         if feat:
             features = self.model.classifier[0](out)  # N x 1280
