@@ -1,7 +1,12 @@
 import torch
+import torchvision
 from torch import nn
 from typing import Optional, Dict, Union
 import os
+import copy
+from torch.utils.data import DataLoader
+import torch.optim as optim
+from torch.optim.lr_scheduler import StepLR
 from avalanche.benchmarks import SplitCIFAR100
 from avalanche.logging import InteractiveLogger, WandBLogger
 from avalanche.evaluation.metrics import (accuracy_metrics,
@@ -16,7 +21,9 @@ from torchvision import transforms
 from model_v2.conv_layers import ConvLayers
 #from model_v2.classifier_F import Classifier
 
-from model_v3.small_mobnet import ModelWrapper, build_classifier
+#from model_v3.small_mobnet import ModelWrapper, build_classifier
+from model_v3.mobnetv3_small import ModelWrapper, build_classifier
+
 
 from training.siesta_v4 import SIESTA
 
@@ -40,9 +47,8 @@ def load_model(
 ) -> nn.Module:
     """
     Load a PyTorch model from a .pth file
-
     Args:
-        model: The model architecture to load weights into
+    model: The model architecture to load weights into
         path: Path to the .pth file
         device: Device to load the model to ('cpu', 'cuda', or specific GPU)
         strict: Whether to strictly enforce that the keys in state_dict match
@@ -86,6 +92,110 @@ def load_model(
         raise Exception(f"Error loading model: {str(e)}")
 
 
+def joint_train(classifier_G, classifier_F):
+
+    print("\n Beggining finetuning on CIFAR10 \n")
+    finetuned_classifier_F = copy.deepcopy(classifier_F)
+    finetuned_classifier_F.cuda()
+    finetuned_classifier_F.train()
+    classifier_G.train()
+    classifier_G.cuda()
+
+    torch.manual_seed(42)
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),  # Random crop with padding
+        transforms.RandomHorizontalFlip(),     # Random horizontal flip
+        transforms.ToTensor(),                 # Convert to tensor
+        # Normalize with CIFAR-10 mean and std
+        transforms.Normalize((0.4914, 0.4822, 0.4465),
+                             (0.2023, 0.1994, 0.2010))
+    ])
+
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465),
+                             (0.2023, 0.1994, 0.2010))
+    ])
+
+    # Load CIFAR-10 Dataset
+    trainset = torchvision.datasets.CIFAR10(
+        root='/space/gguedes/datasets/cifar10/data', train=True, download=True, transform=transform_train
+    )
+    testset = torchvision.datasets.CIFAR10(
+        root='/space/gguedes/datasets/cifar10/data', train=False, download=True, transform=transform_test
+    )
+
+    # DataLoaders
+    trainloader = DataLoader(trainset, batch_size=1024,
+                             shuffle=True, num_workers=16)
+    testloader = DataLoader(testset, batch_size=256,
+                            shuffle=False, num_workers=16)
+
+    optimizer = optim.Adam(finetuned_classifier_F.parameters(), lr=0.1)
+    train_loss = 0
+    correct = 0
+    total = 0
+    # Initialize model, loss, and optimizer
+    criterion = nn.CrossEntropyLoss()
+    lr_scheduler = StepLR(optimizer, step_size=3, gamma=0.97)
+    for epoch in range(100):
+        train_loss = 0
+        correct = 0
+        total = 0
+        for batch_idx, (inputs, targets) in enumerate(trainloader):
+            # Zero the parameter gradients
+            inputs, targets = inputs.cuda(), targets.cuda()
+            optimizer.zero_grad()
+
+            # Forward pass
+            feats = classifier_G(inputs)
+            outputs = finetuned_classifier_F(feats)
+            loss = criterion(outputs, targets)
+
+            # Backward pass and optimize
+            loss.backward()
+            optimizer.step()
+
+            # Update training metrics
+            train_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += targets.size(0)
+            correct += predicted.eq(targets).sum().item()
+
+            # Print progress
+            if batch_idx % 100 == 0:
+                print(f'Epoch {epoch}: [{batch_idx}/{len(trainloader)}] '
+                      f'Loss: {train_loss/(batch_idx+1):.3f} '
+                      f'Acc: {100.*correct/total:.3f}%')
+
+        lr_scheduler.step()
+
+    test_loss = 0
+    correct = 0
+    total = 0
+    finetuned_classifier_F.eval()
+    with torch.no_grad():
+        for batch_idx, (inputs, targets) in enumerate(testloader):
+            inputs, targets = inputs.cuda(), targets.cuda()
+
+            # Forward pass
+            feats = classifier_G(inputs)
+            outputs = finetuned_classifier_F(feats)
+            loss = criterion(outputs, targets)
+
+            test_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += targets.size(0)
+            correct += predicted.eq(targets).sum().item()
+
+    accuracy = 100. * correct / total
+    print(f'Validation Epoch {epoch}: '
+          f'Loss: {test_loss/len(testloader):.3f} '
+          f'Accuracy: {accuracy:.3f}%')
+
+    return finetuned_classifier_F
+
+
 def main(args):
     """
     try:
@@ -104,24 +214,34 @@ def main(args):
 
     """
     extract_from = f'model.features.{args.latent_layer - 1}'
-    classifier_ckpt = 'checkpoints/swav_100c_2000e_mobilenet_modified_gelu_updated.pth'
+    #classifier_ckpt = 'checkpoints/swav_100c_2000e_mobilenet_modified_gelu_updated.pth'
+    classifier_ckpt = None
     classifier_F = build_classifier('MobNet_ClassifierF', classifier_ckpt=classifier_ckpt,
                                     latent_layer=args.latent_layer, num_classes=100)
+    classifier_F.model.classifier[3].reset_parameters()
     core = build_classifier('MobNet_ClassifierG', classifier_ckpt=classifier_ckpt,
                             latent_layer=args.latent_layer, num_classes=100)
 
     classifier_G = ModelWrapper(core, output_layer_names=[
                                 extract_from], return_single=True)
+
+    classifier_G.model.model.features[0][0] = nn.Conv2d(
+        3, 16, kernel_size=3, stride=1, padding=1, bias=False)
     # Define transforms for the CIFAR-100 datase
+    """
     transform = transforms.Compose([
         transforms.Resize((224, 224)),  # Resize to 224x224 for MobileNetV3
         transforms.ToTensor(),          # Convert to tensor
         transforms.Normalize(mean=(0.4914, 0.4822, 0.4465), std=(
             0.2470, 0.2435, 0.2616))  # Normalization for CIFAR-10
     ])
+        """
 
+    if (args.finetune):
+        classifier_F = joint_train(classifier_G, classifier_F)
+        classifier_F.model.classifier[3].reset_parameters()
     benchmark = SplitCIFAR100(
-        n_experiences=10, seed=42, return_task_id=False, train_transform=transform,  eval_transform=transform)
+        n_experiences=10, seed=42, return_task_id=False)
 
     wandb_logger = WandBLogger(
         project_name=args.project_name,
@@ -170,6 +290,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--project_name', type=str, help="WandB project name")
     parser.add_argument('--run_name', type=str, help='Current run name')
+    parser.add_argument('--finetune', type=bool, help='Finetune on CIFAR10')
     parser.add_argument('--latent_layer', type=int,
                         help='Layer from which LRs are extracted', default=8)
     parser.add_argument('--sleep_lr', type=float, help="LR during sleep")

@@ -1,2 +1,0 @@
-model.features.7
-Changing output layer to contain 100 classes. 

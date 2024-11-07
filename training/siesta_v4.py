@@ -237,8 +237,10 @@ class SIESTA(SupervisedTemplate):
         # Sample uniformly from the replay memory_size
 
         total_loss = 0
-        params = self.get_layerwise_params(self.classifier_F, self.lr)
-        optimizer = SGD(params, lr=self.lr)
+        params_F = self.get_layerwise_params(self.classifier_F, self.lr)
+        optimizer = SGD(
+            params_F, lr=self.lr)
+        # optimizer = Adam(params, lr=)
 
         classifier_F = self.classifier_F.cuda()
         # self.classifier_G.train()

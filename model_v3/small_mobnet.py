@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from torchvision.models.mobilenetv2 import _make_divisible  # ConvBNActivation
 from typing import Any, Callable, Dict, Optional, Tuple, TypeVar, Union
 
+
 #### This scripts is MobileNet with Cosine FC layer ####
 
 
@@ -526,7 +527,7 @@ class MobNet_ClassifierF(nn.Module):
 
         self.model = mobilenet_v3_large(pretrained=False)
 
-        for _ in range(0, 8):
+        for _ in range(0, latent_layer):
             del self.model.features[0]
 
         if num_classes is not None:
