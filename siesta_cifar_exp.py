@@ -21,8 +21,10 @@ from torchvision import transforms
 from model_v2.conv_layers import ConvLayers
 #from model_v2.classifier_F import Classifier
 
+
 #from model_v3.small_mobnet import ModelWrapper, build_classifier
-from model_v3.mobnetv3_small import ModelWrapper, build_classifier
+from model_v3.big_mobnet import ModelWrapper, build_classifier, CosineLinear
+#from model_v3.mobnetv3_small import ModelWrapper, build_classifier, CosineLinear
 
 
 from training.siesta_v4 import SIESTA
@@ -103,7 +105,7 @@ def joint_train(classifier_G, classifier_F):
 
     torch.manual_seed(42)
     transform_train = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),  # Random crop with padding
+        transforms.RandomResizedCrop(224),  # Random crop with padding
         transforms.RandomHorizontalFlip(),     # Random horizontal flip
         transforms.ToTensor(),                 # Convert to tensor
         # Normalize with CIFAR-10 mean and std
@@ -112,6 +114,7 @@ def joint_train(classifier_G, classifier_F):
     ])
 
     transform_test = transforms.Compose([
+        transforms.Resize(224),
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465),
                              (0.2023, 0.1994, 0.2010))
@@ -138,6 +141,7 @@ def joint_train(classifier_G, classifier_F):
     # Initialize model, loss, and optimizer
     criterion = nn.CrossEntropyLoss()
     lr_scheduler = StepLR(optimizer, step_size=3, gamma=0.97)
+    finetuned_classifier_F.model.classifier[3] = CosineLinear(1280, 10)
     for epoch in range(100):
         train_loss = 0
         correct = 0
@@ -197,22 +201,6 @@ def joint_train(classifier_G, classifier_F):
 
 
 def main(args):
-    """
-    try:
-        classifier_G = load_model(
-            path='checkpoints/conv_layers_cuda.pth',
-            device='cuda',
-            strict=True
-        )
-        print("Model loaded successfully!")
-
-    except Exception as e:
-        print(f"Failed to load model: {e}")
-
-    classifier_F = Classifier(init_features=2000, embed_size=args.embed_size,
-                              num_classes=100, distance_measure="CosineLinear")
-
-    """
     extract_from = f'model.features.{args.latent_layer - 1}'
     #classifier_ckpt = 'checkpoints/swav_100c_2000e_mobilenet_modified_gelu_updated.pth'
     classifier_ckpt = None
@@ -225,23 +213,19 @@ def main(args):
     classifier_G = ModelWrapper(core, output_layer_names=[
                                 extract_from], return_single=True)
 
-    classifier_G.model.model.features[0][0] = nn.Conv2d(
-        3, 16, kernel_size=3, stride=1, padding=1, bias=False)
     # Define transforms for the CIFAR-100 datase
-    """
     transform = transforms.Compose([
         transforms.Resize((224, 224)),  # Resize to 224x224 for MobileNetV3
         transforms.ToTensor(),          # Convert to tensor
         transforms.Normalize(mean=(0.4914, 0.4822, 0.4465), std=(
             0.2470, 0.2435, 0.2616))  # Normalization for CIFAR-10
     ])
-        """
 
     if (args.finetune):
         classifier_F = joint_train(classifier_G, classifier_F)
-        classifier_F.model.classifier[3].reset_parameters()
+        classifier_F.model.classifier[3] = CosineLinear(1280, 100)
     benchmark = SplitCIFAR100(
-        n_experiences=10, seed=42, return_task_id=False)
+        n_experiences=10, seed=42, return_task_id=False, train_transform = transform, eval_transform = transform)
 
     wandb_logger = WandBLogger(
         project_name=args.project_name,

@@ -4,13 +4,13 @@ import itertools
 # Define hyperparameter grid
 sleep_lr = [0.2]
 sleep_freq = [5]
-mem_size = [50000]
-embed_size = [1024]  # 1024 for small mobile net, 1280 for large
+mem_size = [10000]
+embed_size = [1280]  # 1024 for small mobile net, 1280 for large
 sleep_mb = [64]
 sleep_iter = [5000]
-latent_layer = [3, 4, 5, 6, 7]
+latent_layer = [5, 8]
 finetune = True
-project_name = "SplitCIFAR100_mbnetv3_lr_sweep_pretrain"
+project_name = "SplitCIFAR100_resized_pt"
 
 
 # Iterate over all combinations of hyperparameters
