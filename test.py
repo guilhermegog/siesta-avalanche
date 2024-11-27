@@ -13,7 +13,7 @@ import os
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 torch.set_num_threads(16)
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 os.environ["HTTPS_PROXY"]= "http://icdvm14.ewi.tudelft.nl:3128"
 print(f"Number of GPUs visible: {torch.cuda.device_count()}")
 print(f"Current GPU: {torch.cuda.current_device()}")
@@ -61,8 +61,8 @@ def main():
     ])
 
     wandb_logger = WandBLogger(
-        project_name="siesta_avalanche",
-        run_name="base_run_imagenet1k",
+        project_name="SIESTA_IMG1K_sleep_sweep",
+        run_name="imagenet1k_sleepless",
         log_artifacts = False,
     )
     
@@ -79,7 +79,7 @@ def main():
                                    accuracy_metrics_top5(epoch = True, experience=True, epoch_running=True),
                                    loggers=[InteractiveLogger(),wandb_logger])
 
-    strategy = SIESTA(num_classes=1000, criterion=torch.nn.CrossEntropyLoss(), lr=1.6, tau=1, seed=None, sleep_frequency=2, sleep_mb_size=512, eval_mb_size=1024, memory_size=959665,
+    strategy = SIESTA(num_classes=1000, criterion=torch.nn.CrossEntropyLoss(), lr=1.6, tau=1, seed=None, sleep_frequency=11, sleep_mb_size=512, eval_mb_size=1024, memory_size=959665,
                       device="cuda", evaluator=eval_plugin, eval_every=-1)
     print('Starting experiment...')
     results = []
