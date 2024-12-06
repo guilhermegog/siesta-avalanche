@@ -133,12 +133,12 @@ class MobNet_ClassifierG(nn.Module):
                     curr_layer = layers[i-1]
                     i -= 1
                     if(curr_layer > latent_layer-1):
-                        print(curr_layer)
                         del self.model.features[-1][-1]
                     else:
                         break
                 break
-        print(self.model.features)
+
+        del self.model.classifier
 
     def forward(self, x):
         out = self.model.features(x)

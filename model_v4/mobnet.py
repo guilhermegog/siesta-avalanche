@@ -108,8 +108,10 @@ class MobNet_ClassifierG(nn.Module):
             raise TypeError("Specified architecture is invalid")
 
         assert latent_layer < self.num_features, "Network split invalid."
-        for _ in range(0, latent_layer+1):
+        for _ in range(latent_layer, self.num_features):
             del self.model.features[-1]
+
+        del self.model.classifier
 
     def forward(self, x):
         out = self.model.features(x)
